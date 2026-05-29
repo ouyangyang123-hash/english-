@@ -1,0 +1,36 @@
+# 敏感信息
+*.key
+*.pem
+.env
+credentials.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 字幕临时文件
+subtitles/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code 内部文件
+.claude/
+
+# 不属于代码库的大型文件
+*.mp4
+*.mkv
+*.webm
+
+# 飞书/Notion 配置 (里面有机密)
+飞书机器人创建指南.md
