@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
 GitHub Actions 每日英语Vlog报告生成器
-真正"无关系统"的自动化方案 —— 运行在 GitHub 服务器上
-
 流程:
-1. yt-dlp 搜索 YouTube 英语Vlog (GitHub Actions 在美国,YouTube 可访问)
+1. yt-dlp 搜索 YouTube 英语Vlog
 2. 下载英文字幕 (auto-generated)
 3. DeepSeek API 提取词汇/句型
 4. 生成 Markdown 报告
@@ -22,6 +20,7 @@ import subprocess
 import datetime
 import time
 import shutil
+import tempfile
 from pathlib import Path
 
 import requests
@@ -37,6 +36,7 @@ FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 FEISHU_OPEN_ID = os.environ.get("FEISHU_OPEN_ID", "")
 NOTION_KEY = os.environ.get("NOTION_API_KEY", "")
 NOTION_DB = os.environ.get("NOTION_DATABASE_ID", "")
+YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES", "")
 
 TODAY = datetime.date.today().strftime("%Y-%m-%d")
 IS_CI = os.environ.get("GITHUB_ACTIONS", "") == "true"
@@ -44,6 +44,14 @@ IS_CI = os.environ.get("GITHUB_ACTIONS", "") == "true"
 REPO_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = REPO_ROOT / "vlog文稿" / TODAY
 SUBTITLE_DIR = REPO_ROOT / "subtitles"
+
+# yt-dlp 基础参数
+YTDLP_BASE = [
+    "yt-dlp",
+    "--socket-timeout", "30",
+    "--extractor-retries", "3",
+    "--fragment-retries", "3",
+]
 
 
 # ============================================================
@@ -54,28 +62,45 @@ def log(msg):
     print(f"  [{datetime.datetime.now():%H:%M:%S}] {msg}")
 
 
+def get_cookie_args():
+    """如果有 YouTube cookies 则返回 --cookies 参数"""
+    if not YOUTUBE_COOKIES:
+        return []
+    f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, prefix='yt_cookies_')
+    f.write(YOUTUBE_COOKIES)
+    f.close()
+    return ["--cookies", f.name]
+
+
 # ============================================================
 # Step 1: YouTube 搜索
 # ============================================================
 
 def search_videos(query, count=4):
     """yt-dlp 搜索 YouTube 视频，返回视频信息列表"""
-    cmd = [
-        "yt-dlp",
+    cmd = YTDLP_BASE + [
         f"ytsearch{count}:{query}",
-        "--dump-json", "--no-download",
-        "--socket-timeout", "30",
-    ]
+        "--dump-json", "--no-download", "--flat-playlist",
+    ] + get_cookie_args()
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if result.returncode != 0:
+            log(f"yt-dlp search failed (rc={result.returncode})")
+            if result.stderr:
+                log(f"  stderr: {result.stderr[:300]}")
+            return []
+
         videos = []
         for line in result.stdout.strip().split("\n"):
             if not line:
                 continue
-            info = json.loads(line)
+            try:
+                info = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             dur = info.get("duration", 0) or 0
-            # 过滤 Shorts/太短的视频 (< 2 分钟) 和太长的 (> 60 分钟)
-            # duration 为 0 表示未知（如 flat-playlist），不过滤
+            # duration 为 0 表示未知（flat-playlist），不过滤
             if dur > 0 and (dur < 120 or dur > 3600):
                 continue
             videos.append({
@@ -87,7 +112,7 @@ def search_videos(query, count=4):
             })
         return videos
     except subprocess.TimeoutExpired:
-        log(f"Timeout searching YouTube")
+        log(f"Timeout searching YouTube for '{query}'")
         return []
     except Exception as e:
         log(f"YouTube search error: {e}")
@@ -98,24 +123,26 @@ def download_subtitle(video_id):
     """下载单个视频的英文字幕，返回清洗后的文本"""
     prefix = SUBTITLE_DIR / video_id
 
-    cmd = [
-        "yt-dlp",
+    cmd = YTDLP_BASE + [
         f"https://youtube.com/watch?v={video_id}",
         "--write-auto-subs", "--sub-lang", "en",
         "--skip-download", "--convert-subs", "srt",
         "-o", str(prefix),
-        "--socket-timeout", "30",
-        "--no-warnings",
-    ]
+    ] + get_cookie_args()
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            log(f"yt-dlp download failed (rc={result.returncode})")
+            if result.stderr:
+                log(f"  stderr: {result.stderr[:300]}")
 
         for ext in [".en.srt", ".srt", ".en.vtt", ".vtt"]:
             f = Path(str(prefix) + ext)
             if f.exists():
                 text = f.read_text(encoding="utf-8", errors="ignore")
-                return clean_subtitle(text)
+                if len(text.strip()) > 50:
+                    return clean_subtitle(text)
         return ""
     except Exception as e:
         log(f"Download error for {video_id}: {e}")
@@ -124,23 +151,18 @@ def download_subtitle(video_id):
 
 def clean_subtitle(text):
     """清洗 SRT/VTT 字幕文本"""
-    # 去掉 WEBVTT 头部
     text = re.sub(r'^WEBVTT.*?\n\n', '', text, flags=re.DOTALL)
-    # 去掉时间戳
     text = re.sub(r'\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}', '', text)
-    # 去掉行号
     text = re.sub(r'^\d+\s*$', '', text, flags=re.MULTILINE)
-    # 去掉 HTML 标签和样式标记
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'align:\w+|position:\d+%|line:\d+%|size:\d+%', '', text)
-    # 合并连续空行
     text = re.sub(r'\n{3,}', '\n\n', text)
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     return '\n'.join(lines)
 
 
 # ============================================================
-# Step 2: Claude API 分析
+# Step 2: DeepSeek API 分析
 # ============================================================
 
 def analyze_subtitle(text, video):
@@ -196,7 +218,7 @@ PATTERNS:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "deepseek-chat",
+                "model": DEEPSEEK_MODEL,
                 "temperature": 0.3,
                 "max_tokens": 2000,
                 "messages": [
@@ -218,7 +240,7 @@ PATTERNS:
 
 
 def fallback_extraction(text):
-    """无 API 时的备用提取（质量较低）"""
+    """无 API 时的备用提取"""
     lines = [l.strip() for l in text.split('\n') if 20 < len(l.strip()) < 200]
     patterns = '\n'.join(f'- "{l}" → (待翻译)' for l in lines[:3])
 
@@ -240,7 +262,6 @@ PATTERNS:
 
 def generate_report(results):
     """根据分析结果生成完整报告"""
-
     sections = []
     topics = []
     total_words = 0
@@ -250,19 +271,16 @@ def generate_report(results):
         if not analysis:
             continue
 
-        # 话题
         topic_m = re.search(r'TOPIC:\s*(.+)', analysis)
         topic = topic_m.group(1).strip() if topic_m else "Daily Life"
         topics.append(topic)
 
-        # 词汇表
         vocab = ""
         vm = re.search(r'VOCABULARY:\s*\n((?:\|.+\|\n?)+)', analysis)
         if vm:
             vocab = vm.group(1).strip()
             total_words += max(0, len(re.findall(r'^\|.*\|.*\|.*\|', vocab, re.MULTILINE)) - 1)
 
-        # 句型
         patterns = ""
         pm = re.search(r'PATTERNS:\s*\n((?:.+\n?)+)', analysis)
         if pm:
@@ -281,7 +299,7 @@ def generate_report(results):
 {patterns if patterns else '_(无句型)_'}
 """)
 
-    unique_topics = list(dict.fromkeys(topics))  # keep order, dedupe
+    unique_topics = list(dict.fromkeys(topics))
     NL = '\n'
     SEP = NL + '---' + NL + NL
 
@@ -296,7 +314,6 @@ def generate_report(results):
 - 地道句型 {total_patterns} 个
 - 覆盖话题: {' / '.join(unique_topics) if unique_topics else 'Daily Life'}
 """
-
     return report
 
 
@@ -306,6 +323,10 @@ def generate_report(results):
 
 def sync_notion(date_str, report_text):
     """解析报告中的词汇表并写入 Notion 数据库"""
+    if not NOTION_KEY or not NOTION_DB:
+        log("Notion: skipping (no API key or database ID)")
+        return 0
+
     headers = {
         "Authorization": f"Bearer {NOTION_KEY}",
         "Content-Type": "application/json",
@@ -331,7 +352,6 @@ def sync_notion(date_str, report_text):
 
     added = 0
     for word, meaning, example in words:
-        # 推断词性
         if " " in word:
             pos = "expression"
         elif word.endswith("ing"):
@@ -378,23 +398,35 @@ def sync_notion(date_str, report_text):
 
 def send_feishu(report_text):
     """推送到飞书用户"""
-    # Get token
+    if not FEISHU_APP_ID or not FEISHU_APP_SECRET:
+        log("Feishu: skipping (no credentials)")
+        return False
+
     r = requests.post(
         "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
         json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
         timeout=15,
     )
+
     if r.status_code != 200:
-        log(f"Feishu auth failed: {r.text}")
+        log(f"Feishu auth HTTP error: {r.status_code} {r.text[:200]}")
         return False
 
-    token = r.json().get("tenant_access_token", "")
+    auth_data = r.json()
+    if auth_data.get("code") != 0:
+        log(f"Feishu auth failed: {auth_data.get('msg', auth_data)}")
+        return False
+
+    token = auth_data.get("tenant_access_token", "")
+    if not token:
+        log("Feishu auth: no token returned")
+        return False
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
-    # 截断 (飞书卡片限制)
     content = report_text
     if len(content) > 4800:
         content = content[:4800] + "\n\n...(truncated)"
@@ -455,7 +487,9 @@ def main():
                 videos.append(v)
 
     if not videos:
-        log("ERROR: No videos found. YouTube may be blocked or yt-dlp failed.")
+        log("ERROR: No videos found. YouTube may be blocking the GitHub Actions IP.")
+        log("To fix: add YOUTUBE_COOKIES secret with Netscape-format cookies from a logged-in browser.")
+        log("Export cookies with: yt-dlp --cookies-from-browser chrome --cookies cookies.txt")
         return 1
 
     log(f"Found {len(videos)} videos, targeting top 5")
@@ -466,10 +500,10 @@ def main():
 
     results = []
     for i, v in enumerate(videos[:5]):
-        log(f"\nSTEP 2/3 [{i+1}/5]: {v['title'][:60]}...")
+        log(f"\nSTEP 2 [{i+1}/5]: {v['title'][:60]}...")
         subtitle = download_subtitle(v["id"])
-        if not subtitle or len(subtitle) < 100:
-            log(f"  Skipped: insufficient subtitle ({len(subtitle)} chars)")
+        if not subtitle or len(subtitle.split()) < 30:
+            log(f"  Skipped: insufficient subtitle ({len(subtitle.split())} words)")
             continue
 
         log(f"  Subtitle: {len(subtitle)} chars, analyzing...")
@@ -477,7 +511,7 @@ def main():
         results.append((v, analysis))
 
     if not results:
-        log("ERROR: No usable video results")
+        log("ERROR: No usable video results (no subtitles found for any video)")
         return 1
 
     # --- 3. 生成报告 ---
@@ -495,7 +529,7 @@ def main():
     log("\nSTEP 5: Sending to Feishu...")
     f = send_feishu(report)
 
-    # --- 清理字幕文件 ---
+    # --- 清理 ---
     if SUBTITLE_DIR.exists():
         shutil.rmtree(SUBTITLE_DIR, ignore_errors=True)
 
@@ -508,7 +542,8 @@ def main():
     print(f"  Report          : {report_path}")
     print(f"{'='*55}\n")
 
-    return 0 if (n > 0 and f) else 1
+    # 报告生成了就算成功（Notion/Feishu 失败不阻塞）
+    return 0
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ jobs:
           FEISHU_OPEN_ID: ${{ secrets.FEISHU_OPEN_ID }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: python standalone_report.py
       - name: Commit report back
         if: always()
