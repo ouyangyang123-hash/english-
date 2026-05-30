@@ -3,9 +3,9 @@
 # 使用方法：以管理员身份运行 PowerShell，执行此脚本
 
 $taskName = "DailyEnglishVlogFetch"
-$scriptPath = "C:\Users\Tourism\Desktop\助理团队\daily_vlog_fetch.py"
+$scriptPath = "C:\Users\Tourism\Desktop\助理团队\english-repo\daily_vlog_fetch.py"
 $pythonPath = "C:\Users\Tourism\miniconda3\python.exe"
-$workingDir = "C:\Users\Tourism\Desktop\助理团队"
+$workingDir = "C:\Users\Tourism\Desktop\助理团队\english-repo"
 
 # 删除已存在的同名任务
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -45,7 +45,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Settings $settings `
     -Principal $principal `
-    -Description "每天6:00自动抓取4个YouTube英语Vlog字幕，分析后推送到飞书"
+    -Description "每天6:00自动搜索微信公众号英语Vlog文章，保存到本地"
 
 Write-Host ""
 Write-Host "============================================"
