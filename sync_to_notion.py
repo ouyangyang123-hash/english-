@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import json
+import time
 import datetime
 from pathlib import Path
 
@@ -23,7 +24,7 @@ import requests
 
 NOTION_KEY = os.environ.get("NOTION_API_KEY", "")
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "36e9fe6dced181298587dbef7bb13139")
-BASE_DIR = Path(r"C:\Users\Tourism\Desktop\助理团队")
+BASE_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = BASE_DIR / "vlog文稿"
 
 HEADERS = {
@@ -163,7 +164,6 @@ def sync_report(date_str):
             print(f"  FAIL {word}")
 
         # 避免触发 Notion 限流（每秒3次）
-        import time
         time.sleep(0.35)
 
     return added
