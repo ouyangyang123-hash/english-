@@ -282,10 +282,12 @@ def generate_report(results):
 """)
 
     unique_topics = list(dict.fromkeys(topics))  # keep order, dedupe
+    NL = '\n'
+    SEP = NL + '---' + NL + NL
 
     report = f"""# 每日英语Vlog学习报告 · {TODAY}
 
-{''.join(f'\n---\n\n{s}' for s in sections)}
+{SEP.join(sections)}
 
 ---
 ## 今日统计
