@@ -63,7 +63,7 @@ def search_videos(query, count=4):
     cmd = [
         "yt-dlp",
         f"ytsearch{count}:{query}",
-        "--dump-json", "--no-download", "--flat-playlist",
+        "--dump-json", "--no-download",
         "--socket-timeout", "30",
     ]
     try:
@@ -75,7 +75,8 @@ def search_videos(query, count=4):
             info = json.loads(line)
             dur = info.get("duration", 0) or 0
             # 过滤 Shorts/太短的视频 (< 2 分钟) 和太长的 (> 60 分钟)
-            if dur < 120 or dur > 3600:
+            # duration 为 0 表示未知（如 flat-playlist），不过滤
+            if dur > 0 and (dur < 120 or dur > 3600):
                 continue
             videos.append({
                 "id": info.get("id", ""),
